@@ -1,0 +1,58 @@
+name: Drift check & auto-retraining
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # tous les jours à 6h UTC — à ajuster selon ton besoin
+  workflow_dispatch: {} # permet de le déclencher manuellement pour tester
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    outputs:
+      retrain_needed: ${{ steps.drift.outputs.retrain_needed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run drift detection
+        id: drift
+        run: |
+          # TODO: adapter src/monitoring/drift.py pour écrire un fichier
+          # de sortie lisible par GitHub Actions (ex: echo "retrain_needed=true" >> $GITHUB_OUTPUT)
+          python src/monitoring/drift.py
+
+      - name: Upload drift report
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report
+          path: reports/drift/latest_report.html
+
+  retrain:
+    needs: check-drift
+    if: needs.check-drift.outputs.retrain_needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Retrain model
+        run: python src/training/train.py
+
+      # TODO: une fois le modèle ré-entraîné et validé (comparaison PR-AUC
+      # avec le modèle en production), déclencher le workflow de déploiement
+      # ci-cd.yml, par exemple via repository_dispatch ou en committant le
+      # nouveau modèle pour déclencher un push sur main.

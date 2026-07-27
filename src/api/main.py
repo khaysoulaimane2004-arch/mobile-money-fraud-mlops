@@ -1,24 +1,35 @@
-"""
-API FastAPI de scoring pour la détection de fraude mobile money.
-
-À FAIRE (semaine 2) :
-- Charger le modèle entraîné (models/model.joblib ou via MLflow registry)
-- Endpoint POST /predict qui prend une transaction et retourne un score de fraude
-- Endpoint GET /health pour les health checks Cloud Run
-- Logger chaque prédiction (utile plus tard pour le monitoring de drift)
-"""
-
+import json
+import numpy as np
+import pandas as pd
+import xgboost as xgb
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Mobile Money Fraud Detection API")
 
-# TODO: charger le vrai modèle au démarrage
-# model = joblib.load("models/model.joblib")
+# Load model from JSON format (version-independent)
+booster = xgb.Booster()
+import os
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+MODEL_PATH    = os.path.join(BASE_DIR, "models", "model.json")
+METADATA_PATH = os.path.join(BASE_DIR, "models", "model_metadata.json")
+
+booster.load_model(MODEL_PATH)
+
+with open(METADATA_PATH, "r") as f:
+    metadata = json.load(f)
+
+FEATURES  = metadata["features"]
+THRESHOLD = metadata.get("threshold", 0.5)
+
+print(f"Model loaded ✓")
+print(f"Features  : {len(FEATURES)}")
+print(f"Threshold : {THRESHOLD}")
 
 
 class Transaction(BaseModel):
-    type: str = Field(..., description="CASH-IN, CASH-OUT, DEBIT, PAYMENT ou TRANSFER")
+    type: str = Field(..., description="CASH_IN, CASH_OUT, DEBIT, PAYMENT or TRANSFER")
     amount: float
     oldbalanceOrg: float
     newbalanceOrig: float
@@ -29,20 +40,42 @@ class Transaction(BaseModel):
 class PredictionResponse(BaseModel):
     is_fraud: bool
     fraud_probability: float
+    threshold_used: float
+
+
+def build_features(t: Transaction) -> pd.DataFrame:
+    d = t.dict()
+
+    # Same feature engineering as training
+    d['balance_error_orig']      = d['oldbalanceOrg'] - d['amount'] - d['newbalanceOrig']
+    d['balance_error_dest']      = d['oldbalanceDest'] + d['amount'] - d['newbalanceDest']
+    d['orig_balance_emptied']    = int(d['newbalanceOrig'] == 0)
+    d['dest_balance_was_zero']   = int(d['oldbalanceDest'] == 0)
+    d['amount_to_balance_ratio'] = d['amount'] / (d['oldbalanceOrg'] + 1)
+    d['log_amount']              = np.log1p(d['amount'])
+    d['is_risky_type'] = int(d['type'] in ['CASH_OUT', 'TRANSFER'])
+    # One-hot encode type
+    for t_name in ['CASH_IN', 'CASH_OUT', 'DEBIT', 'PAYMENT', 'TRANSFER']:
+        d[f'type_{t_name}'] = int(d['type'] == t_name)
+
+    df = pd.DataFrame([d])[FEATURES]
+    return df
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "model": "XGBoost", "threshold": THRESHOLD}
 
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict(transaction: Transaction):
-    # TODO: appliquer le même feature engineering que dans src/training/features.py
-    # puis model.predict_proba(...)
-    # Placeholder en attendant le vrai modèle :
-    dummy_probability = 0.01
+    features = build_features(transaction)
+    dmatrix  = xgb.DMatrix(features)
+    fraud_probability = float(booster.predict(dmatrix)[0])
+    is_fraud = fraud_probability >= THRESHOLD
+
     return PredictionResponse(
-        is_fraud=dummy_probability > 0.5,
-        fraud_probability=dummy_probability,
+        is_fraud          = is_fraud,
+        fraud_probability = round(fraud_probability, 4),
+        threshold_used    = THRESHOLD
     )

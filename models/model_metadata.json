@@ -1,0 +1,22 @@
+{
+  "features": [
+    "amount",
+    "oldbalanceOrg",
+    "newbalanceOrig",
+    "oldbalanceDest",
+    "newbalanceDest",
+    "balance_error_orig",
+    "balance_error_dest",
+    "orig_balance_emptied",
+    "amount_to_balance_ratio",
+    "is_risky_type",
+    "type_CASH_IN",
+    "type_CASH_OUT",
+    "type_DEBIT",
+    "type_PAYMENT",
+    "type_TRANSFER"
+  ],
+  "threshold": 0.5,
+  "metrics": {},
+  "xgb_version": "3.3.0"
+}

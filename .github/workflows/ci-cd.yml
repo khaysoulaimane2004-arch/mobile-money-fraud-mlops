@@ -22,8 +22,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements-api.txt pytest httpx
-
+        run: pip install -r requirements-api.txt pytest httpx evidently
       - name: Run tests
         run: pytest tests/ -v
 
@@ -50,3 +49,4 @@ jobs:
 
       - name: Image build successful
         run: echo "Docker image built and tested successfully"
+        

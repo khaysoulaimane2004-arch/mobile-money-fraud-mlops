@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-07-29T10:29:23.564586",
+  "drift_detected": true,
+  "drift_share": 0.8,
+  "n_drifted_cols": 4,
+  "n_total_cols": 5,
+  "threshold": 0.3,
+  "retrain_needed": true,
+  "drifted_features": []
+}

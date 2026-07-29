@@ -1,44 +1,157 @@
 """
-Détection de drift avec Evidently AI.
-
-À FAIRE (semaine 3) :
-- Comparer un jeu de référence (données d'entraînement) à un jeu de production
-  (transactions récentes simulées dans src/simulation/stream.py)
-- Générer un rapport Evidently (HTML pour le dashboard, JSON pour le pipeline
-  de décision automatique)
-- Définir un seuil de drift au-delà duquel on déclenche le ré-entraînement
-  (voir .github/workflows/retrain.yml)
+Drift Detection using Evidently AI v0.7+
 """
 
-from evidently.metric_preset import DataDriftPreset
-from evidently.report import Report
+import os
+import json
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+from evidently import Dataset, DataDefinition
+from evidently.presets import DataDriftPreset
+from evidently import Report
 
 
-def generate_drift_report(reference_df, current_df, output_path: str) -> dict:
-    """Génère un rapport de drift et retourne un résumé exploitable par le pipeline CI."""
-    report = Report(metrics=[DataDriftPreset()])
-    report.run(reference_data=reference_df, current_data=current_df)
-    report.save_html(output_path)
+MONITORING_FEATURES = [
+    "amount",
+    "oldbalanceOrg",
+    "newbalanceOrig",
+    "oldbalanceDest",
+    "newbalanceDest",
+]
 
-    result = report.as_dict()
-    drift_detected = result["metrics"][0]["result"]["dataset_drift"]
-    drift_share = result["metrics"][0]["result"]["share_of_drifted_columns"]
+LOG_FILE        = "reports/drift/transactions_log.csv"
+REPORT_FILE     = "reports/drift/drift_report.html"
+SUMMARY_FILE    = "reports/drift/drift_summary.json"
+DRIFT_THRESHOLD = 0.30
 
-    return {"drift_detected": drift_detected, "drift_share": drift_share}
+
+def generate_reference_data(n=1000, random_state=42):
+    np.random.seed(random_state)
+    return pd.DataFrame({
+        "amount"        : np.random.lognormal(9, 1.5, n),
+        "oldbalanceOrg" : np.random.lognormal(10, 2, n),
+        "newbalanceOrig": np.random.lognormal(9, 2, n),
+        "oldbalanceDest": np.random.lognormal(9, 2, n),
+        "newbalanceDest": np.random.lognormal(9, 2, n),
+    })
 
 
-def should_trigger_retraining(drift_summary: dict, threshold: float = 0.3) -> bool:
-    """Décide si le drift est suffisant pour déclencher un ré-entraînement."""
-    return drift_summary["drift_detected"] and drift_summary["drift_share"] >= threshold
+def load_production_data():
+    if not os.path.exists(LOG_FILE):
+        raise FileNotFoundError(
+            f"Log file not found: {LOG_FILE}\n"
+            "Run the simulator first: python src/simulation/stream.py"
+        )
+    df = pd.read_csv(LOG_FILE)
+    print(f"Production data loaded : {len(df)} transactions")
+    return df[MONITORING_FEATURES]
+
+
+def run_drift_detection():
+    print("=" * 55)
+    print("DRIFT DETECTION — Evidently AI v0.7+")
+    print("=" * 55)
+
+    reference_df  = generate_reference_data()
+    production_df = load_production_data()
+
+    print(f"Reference data  : {len(reference_df)} samples")
+    print(f"Production data : {len(production_df)} samples")
+
+    # Define data schema
+    data_definition = DataDefinition(
+        numerical_columns=MONITORING_FEATURES
+    )
+
+    # Create Evidently datasets
+    reference_dataset  = Dataset.from_pandas(
+        reference_df,
+        data_definition=data_definition
+    )
+    production_dataset = Dataset.from_pandas(
+        production_df,
+        data_definition=data_definition
+    )
+
+    # Run drift report
+    report  = Report(metrics=[DataDriftPreset()])
+    my_eval = report.run(
+        reference_data=reference_dataset,
+        current_data=production_dataset
+    )
+
+    # Save HTML report
+    os.makedirs(os.path.dirname(REPORT_FILE), exist_ok=True)
+    my_eval.save_html(REPORT_FILE)
+    print(f"\nHTML report saved : {REPORT_FILE}")
+
+    # Extract results using v0.7 format
+    result_dict      = my_eval.dict()
+    metrics          = result_dict.get("metrics", [])
+
+    n_drifted        = 0
+    drift_share      = 0.0
+    drifted_features = []
+
+    for metric in metrics:
+        metric_name = metric.get("metric_name", "")
+        value       = metric.get("value", {})
+
+        # DriftedColumnsCount gives us the overall drift share
+        if "DriftedColumnsCount" in metric_name:
+            if isinstance(value, dict):
+                n_drifted   = int(value.get("count", 0))
+                drift_share = float(value.get("share", 0.0))
+
+        # Individual column drift results
+        if "ValueDrift" in metric_name:
+            if isinstance(value, dict) and value.get("drift_detected", False):
+                col = metric.get("config", {}).get("column", "")
+                if col:
+                    drifted_features.append(col)
+
+    total_features = len(MONITORING_FEATURES)
+
+    summary = {
+        "timestamp"        : datetime.now().isoformat(),
+        "drift_detected"   : n_drifted > 0,
+        "drift_share"      : round(drift_share, 4),
+        "n_drifted_cols"   : n_drifted,
+        "n_total_cols"     : total_features,
+        "threshold"        : DRIFT_THRESHOLD,
+        "retrain_needed"   : drift_share >= DRIFT_THRESHOLD,
+        "drifted_features" : drifted_features
+    }
+
+    # Save summary
+    with open(SUMMARY_FILE, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    # Print results
+    print()
+    print("=" * 55)
+    print("DRIFT REPORT SUMMARY")
+    print("=" * 55)
+    print(f"Drift detected    : {summary['drift_detected']}")
+    print(f"Drifted features  : {n_drifted} / {total_features} ({drift_share*100:.1f}%)")
+    print(f"Threshold         : {DRIFT_THRESHOLD*100:.0f}%")
+    print(f"Retraining needed : {summary['retrain_needed']}")
+
+    if drifted_features:
+        print(f"Drifted columns   : {drifted_features}")
+
+    print()
+    if summary["retrain_needed"]:
+        print("DRIFT EXCEEDS THRESHOLD — RETRAINING SHOULD BE TRIGGERED")
+    else:
+        print("No significant drift detected — model is stable")
+
+    print(f"\nSummary saved to : {SUMMARY_FILE}")
+
+    return summary
 
 
 if __name__ == "__main__":
-    import pandas as pd
-
-    reference = pd.read_csv("data/processed/paysim_features.csv").sample(5000)
-    # TODO: remplacer par les vraies données de production loggées par l'API
-    current = pd.read_csv("data/processed/paysim_features.csv").sample(5000)
-
-    summary = generate_drift_report(reference, current, "reports/drift/latest_report.html")
-    print(summary)
-    print("Ré-entraînement nécessaire :", should_trigger_retraining(summary))
+    summary = run_drift_detection()

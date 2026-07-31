@@ -1,58 +1,99 @@
-name: Drift check & auto-retraining
+name: Auto-Retraining Pipeline
 
 on:
+  # Run every day at 2am UTC
   schedule:
-    - cron: "0 6 * * *" # tous les jours à 6h UTC — à ajuster selon ton besoin
-  workflow_dispatch: {} # permet de le déclencher manuellement pour tester
+    - cron: "0 2 * * *"
+  # Can also be triggered manually
+  workflow_dispatch:
+  # Or triggered by a push that contains a drift report
+  push:
+    paths:
+      - "reports/drift/drift_summary.json"
 
 jobs:
+
   check-drift:
     runs-on: ubuntu-latest
     outputs:
-      retrain_needed: ${{ steps.drift.outputs.retrain_needed }}
+      retrain_needed: ${{ steps.check.outputs.retrain_needed }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run drift detection
-        id: drift
+      - name: Check drift summary
+        id: check
         run: |
-          # TODO: adapter src/monitoring/drift.py pour écrire un fichier
-          # de sortie lisible par GitHub Actions (ex: echo "retrain_needed=true" >> $GITHUB_OUTPUT)
-          python src/monitoring/drift.py
-
-      - name: Upload drift report
-        uses: actions/upload-artifact@v4
-        with:
-          name: drift-report
-          path: reports/drift/latest_report.html
+          if [ -f "reports/drift/drift_summary.json" ]; then
+            RETRAIN=$(python -c "
+          import json
+          with open('reports/drift/drift_summary.json') as f:
+              s = json.load(f)
+          print('true' if s.get('retrain_needed', False) else 'false')
+          ")
+            echo "retrain_needed=$RETRAIN" >> $GITHUB_OUTPUT
+            echo "Retraining needed: $RETRAIN"
+          else
+            echo "retrain_needed=true" >> $GITHUB_OUTPUT
+            echo "No drift summary found - triggering retraining"
+          fi
 
   retrain:
     needs: check-drift
     if: needs.check-drift.outputs.retrain_needed == 'true'
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup Python
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install xgboost scikit-learn imbalanced-learn \
+                      pandas numpy joblib
 
-      - name: Retrain model
-        run: python src/training/train.py
+      - name: Run retraining
+        run: python src/training/retrain.py
 
-      # TODO: une fois le modèle ré-entraîné et validé (comparaison PR-AUC
-      # avec le modèle en production), déclencher le workflow de déploiement
-      # ci-cd.yml, par exemple via repository_dispatch ou en committant le
-      # nouveau modèle pour déclencher un push sur main.
+      - name: Check if model was updated
+        id: model_check
+        run: |
+          if [ -f "reports/drift/model_updated.flag" ]; then
+            echo "model_updated=true" >> $GITHUB_OUTPUT
+            echo "Model was updated — will commit and redeploy"
+          else
+            echo "model_updated=false" >> $GITHUB_OUTPUT
+            echo "Model was not updated"
+          fi
+
+      - name: Commit new model
+        if: steps.model_check.outputs.model_updated == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add models/model.json models/model_metadata.json
+          git add reports/drift/retrain_log.json || true
+          git commit -m "Auto-retrain: new model deployed [skip ci]"
+          git push
+
+      - name: Summary
+        run: |
+          echo "=== RETRAINING SUMMARY ==="
+          if [ -f "reports/drift/retrain_log.json" ]; then
+            python -c "
+          import json
+          with open('reports/drift/retrain_log.json') as f:
+              log = json.load(f)
+          last = log[-1]
+          print(f'Status    : {last[\"status\"]}')
+          print(f'Old score : {last[\"old_pr_auc\"]}')
+          print(f'New score : {last[\"new_pr_auc\"]}')
+          print(f'Deployed  : {last[\"deployed\"]}')
+          "
+          fi

@@ -1,0 +1,10 @@
+[
+  {
+    "timestamp": "2026-07-31T22:54:58.525982",
+    "status": "DEPLOYED",
+    "old_pr_auc": 0.0,
+    "new_pr_auc": 1.0,
+    "deployed": true,
+    "reason": "New model (1.0000) >= current (0.0000)"
+  }
+]

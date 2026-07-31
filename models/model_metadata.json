@@ -1,6 +1,7 @@
 {
   "features": [
     "amount",
+    "log_amount",
     "oldbalanceOrg",
     "newbalanceOrig",
     "oldbalanceDest",
@@ -8,6 +9,7 @@
     "balance_error_orig",
     "balance_error_dest",
     "orig_balance_emptied",
+    "dest_balance_was_zero",
     "amount_to_balance_ratio",
     "is_risky_type",
     "type_CASH_IN",
@@ -17,6 +19,9 @@
     "type_TRANSFER"
   ],
   "threshold": 0.5,
-  "metrics": {},
-  "xgb_version": "3.3.0"
+  "metrics": {
+    "pr_auc": 1.0
+  },
+  "xgb_version": "3.3.0",
+  "retrained_at": "2026-07-31T22:54:58.524636"
 }

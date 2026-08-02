@@ -44,22 +44,24 @@ class PredictionResponse(BaseModel):
 
 
 def build_features(t: Transaction) -> pd.DataFrame:
-    d = t.dict()
+    # FIX: use model_dump() instead of dict() for Pydantic v2
+    d = t.model_dump()
 
-    # Same feature engineering as training
     d['balance_error_orig']      = d['oldbalanceOrg'] - d['amount'] - d['newbalanceOrig']
     d['balance_error_dest']      = d['oldbalanceDest'] + d['amount'] - d['newbalanceDest']
     d['orig_balance_emptied']    = int(d['newbalanceOrig'] == 0)
     d['dest_balance_was_zero']   = int(d['oldbalanceDest'] == 0)
     d['amount_to_balance_ratio'] = d['amount'] / (d['oldbalanceOrg'] + 1)
-    d['log_amount']              = np.log1p(d['amount'])
+
+    # FIX: guard against negative amounts before log transform
+    d['log_amount'] = np.log1p(max(d['amount'], 0))
+
     d['is_risky_type'] = int(d['type'] in ['CASH_OUT', 'TRANSFER'])
-    # One-hot encode type
+
     for t_name in ['CASH_IN', 'CASH_OUT', 'DEBIT', 'PAYMENT', 'TRANSFER']:
         d[f'type_{t_name}'] = int(d['type'] == t_name)
 
-    df = pd.DataFrame([d])[FEATURES]
-    return df
+    return pd.DataFrame([d])[FEATURES]
 
 
 @app.get("/health")
